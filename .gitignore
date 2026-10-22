@@ -1,0 +1,92 @@
+*.o
+*.a
+*.dSYM
+*.csv
+*.out
+*.png
+*.jpg
+*.so
+*.exe
+*.dll
+*.lib
+*.dylib
+*.pyc
+*.bak
+mnist/
+data/
+caffe/
+grasp/
+images/
+opencv/
+convnet/
+decaf/
+submission/
+# cfg/ 由本项目放行（含 yolov4-tiny-3l-cell.cfg）
+temp/
+build/darknet/*
+build_*/
+debug/
+ninja/
+ninja.zip
+vcpkg_installed/
+!build/darknet/YoloWrapper.cs
+.fuse*
+*.weights
+build/*.cmake
+build/*.ninja
+build/*.txt
+build/*.json
+build/CMakeFiles/
+build/detect_cuda_compute_capabilities.cu
+build/.ninja_deps
+build/.ninja_log
+build/Makefile
+CMakeFiles/
+CMakeCache.txt
+*/vcpkg-manifest-install.log
+build.log
+__pycache__/
+
+# OS Generated #
+.DS_Store*
+ehthumbs.db
+Icon?
+Thumbs.db
+*.swp
+
+# IDE generated #
+.vs/
+.vscode/
+
+# Managed by CMake
+src/version.h
+
+# Build artifacts
+lib/
+share/
+include/darknet/
+uselib
+uselib_track
+darknet
+kmeansiou
+vcpkg/
+
+# ===== 斑马鱼定量项目附加规则 =====
+# 私有工作笔记与本地冒烟数据（切勿公开）
+.workbuddy/
+# 构建产物 / 本地二进制 / 日志
+build/
+cmake-build-debug/
+dataset/
+3rdparty/*.dll
+3rdparty/*.a
+3rdparty/*.lib
+*.log
+# 数据资产：上游规则忽略了 *.png/*.csv/*.exe 等，显式放行 annotations 与 cfg
+!annotations/**
+!cfg/**
+# annotations 内的大件与可再生产物（续训状态/可视化/复核图）
+annotations/unet_resume_*.pt
+annotations/*_vis/
+annotations/review/
+annotations/qc/

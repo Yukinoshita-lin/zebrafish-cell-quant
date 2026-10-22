@@ -1,0 +1,14 @@
+中后肠 U-Net 分割训练报告
+================================================
+配置：输入 绿色通道 ÷4（688x552），
+      base16 三级 U-Net（0.12M 参数），
+      BCE + SoftDice，Adam lr=0.001 cosine，60 epochs
+数据：train 150 / test 40（按图划分，人工掩码 GT）
+
+结果：
+  测试集 Dice（下采样口径）: 均值 0.5798  中位 0.6007  P10 0.4204
+  测试集 Dice（全图分辨率口径，12 张）: 均值 0.5625  中位 0.6006
+  最佳 epoch: 60（Dice 0.5798）
+  验收标准（需求 7）：Dice >= 0.85  ->  未达标，需迭代
+
+模型：annotations/unet_model.pt（含 state_dict/scale/epoch/dice）
