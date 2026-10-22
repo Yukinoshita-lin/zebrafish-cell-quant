@@ -101,8 +101,14 @@ cfg/ src/ include/ ...   darknet 原生链路（保留，非当前主线）
 - 判断 GPU 不要看 `torch.__version__` 后缀，直接 `torch.cuda.is_available()`
 - 掩码上采样必须 `INTER_NEAREST`（÷4 口径下 nearest 0.9699 vs linear 0.9274）
 
-## 许可与致谢
+## 许可
 
-- 代码沿用 darknet 的 public domain 许可（见 `LICENSE`）
-- 上游：[AlexeyAB/darknet](https://github.com/AlexeyAB/darknet)
-- 方法参考：Thapa & Stachura 2021（荧光细胞深度学习检测），但本数据集为 6MP 高分辨、细胞仅 5~10 px，架构上做了针对性调整（详见 `DATASET_AND_TRAINING_READINESS.md`）
+本项目以 **Apache License 2.0** 发布，版权所有 © 2026 **Yukinoshita-lin**（见 `LICENSE`）。
+`annotations/` 下的数据集（掩码、清单、草稿框）与训练好的模型权重同样采用 Apache 2.0——
+二次使用时请保留版权声明与许可文件，并用显著方式标明所做的修改。
+
+上游致谢（非共同版权方）：
+- 本仓库 fork 自 [AlexeyAB/darknet](https://github.com/AlexeyAB/darknet)（public domain），
+  保留其 C/Python 源码与构建体系；`3rdparty/`（stb / pthreads / getopt）均为 public domain 组件
+- 方法参考：Thapa & Stachura 2021（荧光细胞深度学习检测），但本数据集为 6MP 高分辨、
+  细胞仅 5~10 px，架构上做了针对性调整（详见 `DATASET_AND_TRAINING_READINESS.md`）
