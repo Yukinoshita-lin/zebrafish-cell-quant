@@ -62,7 +62,7 @@ GUIDE_MD = ROOT / "docs" / "新人指南-如何训练模型.md"
 SMOKE = "--smoke" in sys.argv
 SMOKE_ENV = "--smoke-env" in sys.argv
 
-APP_VERSION = "1.1.0"        # 应用版本（同步 installer.iss）
+APP_VERSION = "1.1.1"        # 应用版本（同步 installer.iss）
 TARGET_DICE = 0.85          # 需求 7 验收线
 EVAL_EVERY = 5              # 训练脚本每 5 轮评估一次（进度条按轮推进）
 
