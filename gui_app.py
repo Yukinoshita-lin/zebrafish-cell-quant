@@ -58,7 +58,6 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox,
 # ---------------------------------------------------------------- 常量
 ROOT = Path(__file__).resolve().parent
 DEFAULT_DATA = ROOT / "annotations"
-GUIDE_MD = ROOT / "docs" / "新人指南-如何训练模型.md"
 SMOKE = "--smoke" in sys.argv
 SMOKE_ENV = "--smoke-env" in sys.argv
 
@@ -413,10 +412,7 @@ class DataPage(QWidget):
         act.addStretch(1)
         b_open = QPushButton("打开数据文件夹")
         b_open.clicked.connect(self.open_dir)
-        b_guide = QPushButton("查看标注与训练指南")
-        b_guide.clicked.connect(self.open_guide)
         act.addWidget(b_open)
-        act.addWidget(b_guide)
         v.addLayout(act)
         v.addStretch(1)
 
@@ -458,12 +454,6 @@ class DataPage(QWidget):
 
     def open_dir(self):
         open_path(self.mw.data_dir)
-
-    def open_guide(self):
-        if GUIDE_MD.exists():
-            open_path(GUIDE_MD)
-        else:
-            QMessageBox.information(self, "提示", "未找到指南文档 docs/新人指南-如何训练模型.md")
 
 
 class TrainPage(QWidget):
