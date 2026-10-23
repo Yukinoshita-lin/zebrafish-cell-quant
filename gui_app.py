@@ -820,19 +820,33 @@ class EnvPage(QWidget):
         super().__init__()
         self.mw = mw
         v = QVBoxLayout(self)
-        v.setContentsMargins(28, 24, 28, 24)
-        v.setSpacing(16)
+        v.setContentsMargins(24, 20, 24, 20)
+        v.setSpacing(12)
+
+        # ---- 自检区放入滚动区：窗口再小也不会把行挤压成碎片 ----
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(
+            "QScrollArea{background:transparent;}"
+            "QScrollArea>QWidget>QWidget{background:transparent;}")
+        box = QWidget()
+        bv = QVBoxLayout(box)
+        bv.setContentsMargins(0, 0, 0, 0)
+        bv.setSpacing(12)
+        scroll.setWidget(box)
 
         card = Card()
         card.v.addWidget(self._lbl("计算环境自检"))
         card.v.addWidget(self._hint(
-            "安装包只内置界面与数据处理所需的基础库；PyTorch 作为可选项按需安装。"
-            "torch 安装包已内含 CUDA 13 运行库，无需单独安装 CUDA Toolkit——"
-            "有 NVIDIA GPU 请选 CUDA 版（训练快约 37 倍），否则选 CPU 版。"))
+            "PyTorch 按需安装，安装包已内含 CUDA 13 运行库"
+            "（无需单独安装 CUDA Toolkit）。有 NVIDIA GPU 请选 CUDA 版，"
+            "训练快约 37 倍；否则选 CPU 版。"))
         self.rows_v = QVBoxLayout()
-        self.rows_v.setSpacing(10)
+        self.rows_v.setSpacing(8)
         card.v.addLayout(self.rows_v)
-        v.addWidget(card)
+        bv.addWidget(card)
 
         # 依赖行定义：(key, 名称, 说明)
         specs = [
@@ -848,29 +862,28 @@ class EnvPage(QWidget):
         for key, name, desc in specs:
             row = QFrame()
             row.setObjectName("Card")
+            row.setToolTip(desc)          # 说明文字改为悬停提示，行保持单行
+            row.setMinimumHeight(40)
             h = QHBoxLayout(row)
-            h.setContentsMargins(16, 12, 16, 12)
+            h.setContentsMargins(14, 9, 14, 9)
             h.setSpacing(16)
-            left = QVBoxLayout()
-            left.setSpacing(0)
             n = QLabel(name)
             n.setStyleSheet(f"font-size:13px; font-weight:500; "
                             f"color:{CLR['text']};")
-            d = QLabel(desc)
-            d.setObjectName("TileLabel")
-            left.addWidget(n)
-            left.addWidget(d)
-            h.addLayout(left)
+            n.setToolTip(desc)
+            h.addWidget(n)
             st = QLabel("检测中…")
-            st.setWordWrap(True)                 # 长文本换行，避免被裁切
+            st.setWordWrap(True)           # 长文本换行，避免被裁切
             st.setMinimumWidth(300)
             st.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             st.setStyleSheet(f"font-size:13px; color:#C3C8D2;")
+            st.setToolTip(desc)
             self.status_lbl[key] = st
             h.addWidget(st, 1)
             self.rows_v.addWidget(row)
+        v.addWidget(scroll, 1)
 
-        # torch 专属操作行
+        # torch 专属操作行（固定在滚动区外，始终可见）
         act = QHBoxLayout()
         act.setSpacing(10)
         self.btn_cpu = QPushButton("安装 CPU 版 PyTorch（约 200 MB）")
@@ -896,9 +909,9 @@ class EnvPage(QWidget):
         log_card = Card()
         log_card.v.addWidget(self._lbl("安装日志"))
         self.log = LogConsole()
-        self.log.setMinimumHeight(160)
+        self.log.setMinimumHeight(110)
         log_card.v.addWidget(self.log)
-        v.addWidget(log_card, 1)
+        v.addWidget(log_card)
 
     def _lbl(self, t):
         l = QLabel(t)
