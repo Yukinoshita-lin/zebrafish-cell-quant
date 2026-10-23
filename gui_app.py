@@ -29,9 +29,11 @@ gui_app.py —— 斑马鱼中后肠荧光细胞定量工具（图形界面）
   * 数据目录通过环境变量 UNET_ANN_DIR 传给脚本（未设时脚本行为不变）
   * 子进程 stdout 统一按 UTF-8 解码（PYTHONIOENCODING=utf-8）
   * --smoke 进入自检模式（offscreen 平台 + 2 轮迷你训练全链路验证）
+  * --smoke-env 环境页自检（验证 torch 缺失识别 + 自动跳转 + 一键安装全流程）
 
 源码运行：  python gui_app.py
 自检运行：  QT_QPA_PLATFORM=offscreen python gui_app.py --smoke
+环境自检：  QT_QPA_PLATFORM=offscreen python gui_app.py --smoke-env
 """
 from __future__ import annotations
 
@@ -58,9 +60,44 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_DATA = ROOT / "annotations"
 GUIDE_MD = ROOT / "docs" / "新人指南-如何训练模型.md"
 SMOKE = "--smoke" in sys.argv
+SMOKE_ENV = "--smoke-env" in sys.argv
 
+APP_VERSION = "1.1.0"        # 应用版本（同步 installer.iss）
 TARGET_DICE = 0.85          # 需求 7 验收线
 EVAL_EVERY = 5              # 训练脚本每 5 轮评估一次（进度条按轮推进）
+
+# PyTorch 一键安装源（torch wheel 已内含 CUDA 运行库，无需单独装 Toolkit）
+TORCH_INDEX = {
+    "cpu": "https://download.pytorch.org/whl/cpu",
+    "cuda": "https://download.pytorch.org/whl/cu130",
+}
+TORCH_SIZE_HINT = {"cpu": "约 200 MB", "cuda": "约 2.5 GB（含 CUDA 13 运行库）"}
+
+# 依赖探测：在子进程中 import，避免拖慢 GUI 进程本身
+PROBE_SCRIPT = r'''
+import json, shutil
+out = {}
+for m in ["PySide6", "numpy", "cv2", "torch"]:
+    try:
+        mod = __import__(m)
+        out[m] = getattr(mod, "__version__", "?")
+    except Exception:
+        out[m] = None
+if out.get("torch"):
+    try:
+        import torch
+        out["torch_cuda_build"] = bool(torch.version.cuda)
+        out["cuda_ok"] = bool(torch.cuda.is_available())
+    except Exception:
+        out["torch_cuda_build"] = None
+        out["cuda_ok"] = None
+try:
+    du = shutil.disk_usage(".")
+    out["disk_free_gb"] = round(du.free / 1e9, 1)
+except Exception:
+    out["disk_free_gb"] = None
+print("PROBE:" + json.dumps(out))
+'''
 
 # 深色主题配色（扁平、低饱和）
 CLR = {
@@ -775,6 +812,139 @@ class CountPage(QWidget):
         open_path(p if p.exists() else self.mw.data_dir)
 
 
+# ---------------------------------------------------------------- 环境页
+class EnvPage(QWidget):
+    """环境页：依赖自检 + 一键安装 PyTorch（CPU / CUDA 可选）。"""
+
+    def __init__(self, mw):
+        super().__init__()
+        self.mw = mw
+        v = QVBoxLayout(self)
+        v.setContentsMargins(28, 24, 28, 24)
+        v.setSpacing(16)
+
+        card = Card()
+        card.v.addWidget(self._lbl("计算环境自检"))
+        card.v.addWidget(self._hint(
+            "安装包只内置界面与数据处理所需的基础库；PyTorch 作为可选项按需安装。"
+            "torch 安装包已内含 CUDA 13 运行库，无需单独安装 CUDA Toolkit——"
+            "有 NVIDIA GPU 请选 CUDA 版（训练快约 37 倍），否则选 CPU 版。"))
+        self.rows_v = QVBoxLayout()
+        self.rows_v.setSpacing(10)
+        card.v.addLayout(self.rows_v)
+        v.addWidget(card)
+
+        # 依赖行定义：(key, 名称, 说明)
+        specs = [
+            ("python", "Python 运行时", "随安装包内置，无需安装"),
+            ("PySide6", "PySide6 界面库", "随安装包内置"),
+            ("numpy", "numpy 数值库", "随安装包内置"),
+            ("cv2", "opencv 图像库", "随安装包内置"),
+            ("torch", "PyTorch 深度学习框架", "训练与计数必需，按需安装"),
+            ("gpu", "NVIDIA GPU 驱动", "决定能否使用 CUDA 加速"),
+            ("disk", "磁盘剩余空间", "模型与输出需要数 GB 空间"),
+        ]
+        self.status_lbl = {}
+        for key, name, desc in specs:
+            row = QFrame()
+            row.setObjectName("Card")
+            h = QHBoxLayout(row)
+            h.setContentsMargins(16, 12, 16, 12)
+            h.setSpacing(16)
+            left = QVBoxLayout()
+            left.setSpacing(0)
+            n = QLabel(name)
+            n.setStyleSheet(f"font-size:13px; font-weight:500; "
+                            f"color:{CLR['text']};")
+            d = QLabel(desc)
+            d.setObjectName("TileLabel")
+            left.addWidget(n)
+            left.addWidget(d)
+            h.addLayout(left)
+            st = QLabel("检测中…")
+            st.setWordWrap(True)                 # 长文本换行，避免被裁切
+            st.setMinimumWidth(300)
+            st.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            st.setStyleSheet(f"font-size:13px; color:#C3C8D2;")
+            self.status_lbl[key] = st
+            h.addWidget(st, 1)
+            self.rows_v.addWidget(row)
+
+        # torch 专属操作行
+        act = QHBoxLayout()
+        act.setSpacing(10)
+        self.btn_cpu = QPushButton("安装 CPU 版 PyTorch（约 200 MB）")
+        self.btn_cuda = QPushButton("安装 CUDA 版 PyTorch（约 2.5 GB，推荐）")
+        self.btn_cuda.setObjectName("BtnPrimary")
+        self.btn_cpu.clicked.connect(lambda: self.mw.start_torch_install("cpu"))
+        self.btn_cuda.clicked.connect(lambda: self.mw.start_torch_install("cuda"))
+        act.addWidget(self.btn_cpu)
+        act.addWidget(self.btn_cuda)
+        act.addStretch(1)
+        b_re = QPushButton("重新检测")
+        b_re.clicked.connect(self.mw.check_env)
+        act.addWidget(b_re)
+        v.addLayout(act)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFormat("空闲")
+        self.progress.hide()
+        v.addWidget(self.progress)
+
+        log_card = Card()
+        log_card.v.addWidget(self._lbl("安装日志"))
+        self.log = LogConsole()
+        self.log.setMinimumHeight(160)
+        log_card.v.addWidget(self.log)
+        v.addWidget(log_card, 1)
+
+    def _lbl(self, t):
+        l = QLabel(t)
+        l.setObjectName("SectionTitle")
+        return l
+
+    def _hint(self, t):
+        l = QLabel(t)
+        l.setObjectName("Hint")
+        l.setWordWrap(True)
+        return l
+
+    def set_status(self, key, text, ok=None):
+        st = self.status_lbl.get(key)
+        if st is None:
+            return
+        st.setText(text)
+        col = {True: CLR["accent"], False: CLR["warn"]}.get(ok, "#C3C8D2")
+        st.setStyleSheet(f"font-size:13px; color: {col};")
+
+    def set_torch_installed(self, installed):
+        # 按钮保持可用：已安装者也应能切换 CPU / CUDA 版本
+        self.btn_cpu.setEnabled(True)
+        self.btn_cuda.setEnabled(True)
+
+    def show_installing(self, kind):
+        self.btn_cpu.setEnabled(False)
+        self.btn_cuda.setEnabled(False)
+        self.progress.show()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFormat(f"下载安装 {kind.upper()} 版 PyTorch… %p%")
+        self.log.clear()
+        self.log.append_line(
+            f"开始安装 {kind.upper()} 版 PyTorch"
+            f"（源：{TORCH_INDEX[kind]}，{TORCH_SIZE_HINT[kind]}）", "info")
+
+    def install_done(self, ok):
+        self.btn_cpu.setEnabled(True)
+        self.btn_cuda.setEnabled(True)
+        if ok:
+            self.progress.setFormat("安装完成")
+        else:
+            self.progress.setFormat("安装失败")
+
+
 # ---------------------------------------------------------------- 主窗口
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -784,13 +954,15 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1060, 720)
         self.data_dir = DEFAULT_DATA
         self.proc = None
-        self.proc_kind = None            # train / v1 / count
+        self.proc_kind = None            # train / v1 / count / install
         self.train_total = 0
         self.epoch_times = []
         self.curve_points = []
         self.metrics = None
         self.t_train_start = 0.0
         self.smoke_done = False
+        self._gpu_name = None
+        self.env_torch = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -816,12 +988,12 @@ class MainWindow(QMainWindow):
         self.nav = QButtonGroup(self)
         self.nav.setExclusive(True)
         self.pages = {}
-        for i, name in enumerate(["数据", "训练", "指标", "计数"]):
+        for i, name in enumerate(["数据", "训练", "指标", "计数", "环境"]):
             b = NavButton(name)
             self.nav.addButton(b, i)
             sv.addWidget(b)
         sv.addStretch(1)
-        ver = QLabel(f"PySide6 6.x · Python {sys.version.split()[0]}")
+        ver = QLabel(f"v{APP_VERSION} · Python {sys.version.split()[0]}")
         ver.setStyleSheet(f"font-size:10px; color:{CLR['dim2']}; padding:8px;")
         sv.addWidget(ver)
         root.addWidget(side)
@@ -855,6 +1027,7 @@ class MainWindow(QMainWindow):
         self.pages["train"] = TrainPage(self)
         self.pages["metrics"] = MetricsPage(self)
         self.pages["count"] = CountPage(self)
+        self.pages["env"] = EnvPage(self)
         for p in self.pages.values():
             self.stack.addWidget(p)
         right.addWidget(self.stack, 1)
@@ -875,7 +1048,8 @@ class MainWindow(QMainWindow):
         self._subtitles = {"data": "选择标注数据文件夹",
                            "train": "配置并训练中后肠分割模型",
                            "metrics": "Dice 曲线与训练报告",
-                           "count": "掩码内荧光细胞计数"}
+                           "count": "掩码内荧光细胞计数",
+                           "env": "依赖自检与 PyTorch 安装"}
         self.nav.idClicked.connect(self.switch_page)
         self.switch_page(0)
 
@@ -883,22 +1057,25 @@ class MainWindow(QMainWindow):
         self.pages["data"].set_dir(DEFAULT_DATA)
         self.refresh_model_lists()
         self.check_gpu()
+        self.check_env(_auto=True)
         QTimer.singleShot(600, self._after_init)
 
     # ---------------- 页面切换 ----------------
     def switch_page(self, idx):
         self.stack.setCurrentIndex(idx)
-        names = ["data", "train", "metrics", "count"]
+        names = ["data", "train", "metrics", "count", "env"]
         btn = self.nav.button(idx)
         if btn:
             btn.setChecked(True)
-        self.page_title.setText(["数据", "训练", "指标", "计数"][idx])
+        self.page_title.setText(["数据", "训练", "指标", "计数", "环境"][idx])
         self.page_sub.setText(self._subtitles[names[idx]])
         if idx == 3:
             self.refresh_model_lists()
 
     def _after_init(self):
-        if SMOKE:
+        if SMOKE_ENV:
+            QTimer.singleShot(300, self.run_smoke_env)
+        elif SMOKE:
             QTimer.singleShot(300, self.run_smoke)
 
     # ---------------- GPU 状态 ----------------
@@ -908,7 +1085,7 @@ class MainWindow(QMainWindow):
         p.finished.connect(lambda code, st, pp=p: self._gpu_done(pp))
         p.errorOccurred.connect(lambda err, pp=p: self._gpu_missing(pp))
         p.start("nvidia-smi",
-                ["--query-gpu=name,memory.total", "--format=csv,noheader"])
+                ["--query-gpu=name,driver_version", "--format=csv,noheader"])
         self._gpu_proc = p
 
     def _gpu_missing(self, p):
@@ -919,17 +1096,160 @@ class MainWindow(QMainWindow):
         self.gpu_chip.setText("未检测到 NVIDIA GPU（训练将极慢）")
         self.gpu_chip.setObjectName("ChipWarn")
         self.gpu_chip.style().polish(self.gpu_chip)
+        self.pages["env"].set_status("gpu", "未检测到 NVIDIA GPU", False)
 
     def _gpu_done(self, p):
         out = bytes(p.readAllStandardOutput().data()).decode(
             "utf-8", "replace").strip()
         if out:
-            self.gpu_chip.setText(f"GPU · {out}")
+            # "NVIDIA GeForce RTX 4060 Laptop GPU, 591.96" → 短名 + 驱动版本
+            parts = [s.strip() for s in out.split(",")]
+            short = parts[0].replace("NVIDIA GeForce ", "").replace(" GPU", "")
+            driver = parts[-1] if len(parts) > 1 else ""
+            self._gpu_name = short
+            self.gpu_chip.setText(f"GPU · {short}"
+                                  + (f" · 驱动 {driver}" if driver else ""))
             self.gpu_chip.setObjectName("ChipOk")
+            self.gpu_chip.style().polish(self.gpu_chip)
+            self.pages["env"].set_status(
+                "gpu", f"{short}" + (f"（驱动 {driver}）" if driver else ""), True)
         else:
-            self.gpu_chip.setText("未检测到 NVIDIA GPU（训练将极慢）")
-            self.gpu_chip.setObjectName("ChipWarn")
-        self.gpu_chip.style().polish(self.gpu_chip)
+            self._gpu_missing(p)
+
+    # ---------------- 环境自检 ----------------
+    def ensure_env_probed(self, timeout=90):
+        """启动时的异步探测尚未返回时，同步补测一次（阻塞数秒）。"""
+        if self.env_torch is not None:
+            return True
+        try:
+            import subprocess
+            env = dict(os.environ)
+            env["PYTHONIOENCODING"] = "utf-8"
+            r = subprocess.run([sys.executable, "-c", PROBE_SCRIPT],
+                               capture_output=True, text=True,
+                               timeout=timeout, env=env)
+            for line in r.stdout.splitlines():
+                if line.startswith("PROBE:"):
+                    import json
+                    info = json.loads(line[6:])
+                    self.env_torch = info.get("torch")
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def probe_python(self, callback):
+        """在子进程中探测已安装库，避免 GUI 进程直接 import 重库。"""
+        p = QProcess(self)
+        p.setProcessChannelMode(QProcess.MergedChannels)
+        p.finished.connect(lambda code, st, pp=p, cb=callback:
+                           self._probe_done(pp, cb))
+        p.start(sys.executable, ["-c", PROBE_SCRIPT])
+        self._probe_proc = p
+
+    def _probe_done(self, p, callback):
+        out = bytes(p.readAllStandardOutput().data()).decode(
+            "utf-8", "replace")
+        info = None
+        for line in out.splitlines():
+            if line.startswith("PROBE:"):
+                try:
+                    import json
+                    info = json.loads(line[6:])
+                except Exception:
+                    info = None
+        callback(info)
+
+    def check_env(self, _auto=False):
+        """刷新环境页所有依赖状态；torch 缺失时首次自动跳到本页。"""
+        ep = self.pages["env"]
+        ep.set_status("python", f"Python {sys.version.split()[0]} · 内置", True)
+        for key in ("PySide6", "numpy", "cv2"):
+            ep.set_status(key, "检测中…")
+
+        def done(info):
+            if info is None:
+                for key in ("PySide6", "numpy", "cv2", "torch", "disk"):
+                    ep.set_status(key, "检测失败（子进程无输出）", False)
+                return
+            for key, mod in [("PySide6", "PySide6"), ("numpy", "numpy"),
+                             ("cv2", "cv2")]:
+                ver = info.get(mod)
+                if ver:
+                    ep.set_status(key, f"{mod} {ver} · 内置", True)
+                else:
+                    ep.set_status(key, f"{mod} 缺失（不应发生）", False)
+            # PyTorch
+            tv = info.get("torch")
+            self.env_torch = tv
+            if tv:
+                if info.get("torch_cuda_build"):
+                    if info.get("cuda_ok"):
+                        ep.set_status("torch", f"{tv} · GPU 加速可用", True)
+                    else:
+                        ep.set_status(
+                            "torch", "CUDA 版不可用（驱动过旧或无 GPU）", False)
+                else:
+                    ep.set_status("torch", f"{tv} · CPU 版（训练慢约 37 倍）",
+                                  None)
+                ep.set_torch_installed(True)
+            else:
+                ep.set_status("torch", "未安装 —— 训练/计数前必须安装", False)
+                ep.set_torch_installed(False)
+                if _auto:
+                    # 首次启动发现 torch 缺失：自动引导到环境页
+                    self.switch_page(4)
+            # 磁盘
+            free = info.get("disk_free_gb")
+            if free is not None:
+                ok = free >= 5
+                ep.set_status("disk", f"{free} GB 可用"
+                              + ("" if ok else "（不足 5 GB，建议清理）"), ok)
+            # GPU 与 torch 的组合结论
+            if info.get("cuda_ok"):
+                ep.set_status("gpu", ep.status_lbl["gpu"].text()
+                              + " · torch 已识别", True)
+
+        self.probe_python(done)
+
+    # ---------------- PyTorch 一键安装 ----------------
+    def start_torch_install(self, kind):
+        if self.proc:
+            return
+        has_gpu = self._gpu_name is not None
+        if kind == "cuda" and not has_gpu:
+            QMessageBox.warning(
+                self, "未检测到 NVIDIA GPU",
+                "本机未检测到 NVIDIA GPU，安装 CUDA 版 PyTorch 也无法加速。\n"
+                "建议安装 CPU 版；如确认有 GPU 请检查驱动。")
+            return
+        if SMOKE or SMOKE_ENV:
+            ret = QMessageBox.Yes        # 自检模式自动确认
+        else:
+            ret = QMessageBox.question(
+                self, f"安装 {kind.upper()} 版 PyTorch",
+                f"将从 PyTorch 官方源下载并安装 {kind.upper()} 版"
+                f"（{TORCH_SIZE_HINT[kind]}），耗时取决于网络。\n\n"
+                f"安装目标：{sys.executable}\n\n是否开始？")
+        if ret != QMessageBox.Yes:
+            return
+        ep = self.pages["env"]
+        ep.show_installing(kind)
+        env = dict(os.environ)
+        env["PYTHONIOENCODING"] = "utf-8"
+        # pip 临时目录指到应用所在盘（系统盘空间可能不足，CUDA wheel 2.5GB）
+        tmp = ROOT / "tmp_install"
+        try:
+            tmp.mkdir(exist_ok=True)
+        except Exception:
+            tmp = None
+        if tmp:
+            env["TMPDIR"] = str(tmp)
+            env["TMP"] = str(tmp)
+            env["TEMP"] = str(tmp)
+        self.launch("install", None, env, extra_args=[
+            "-m", "pip", "install", "--no-cache-dir", "torch",
+            "--index-url", TORCH_INDEX[kind]])
 
     # ---------------- 数据校验 ----------------
     def validate_data(self):
@@ -1008,6 +1328,16 @@ class MainWindow(QMainWindow):
     def start_training(self):
         if self.proc:
             return
+        if self.env_torch is None:
+            self.ensure_env_probed()
+        if not self.env_torch:
+            ret = QMessageBox.question(
+                self, "尚未安装 PyTorch",
+                "训练需要 PyTorch 深度学习框架，当前尚未安装。\n"
+                "是否前往「环境」页一键安装（CPU 版约 200MB / CUDA 版约 2.5GB）？")
+            if ret == QMessageBox.Yes:
+                self.switch_page(4)
+            return
         info = self.validate_data()
         if not (self.data_dir / "manifest.csv").exists():
             QMessageBox.warning(self, "无法训练",
@@ -1064,6 +1394,16 @@ class MainWindow(QMainWindow):
     def start_counting(self):
         if self.proc:
             return
+        if self.env_torch is None:
+            self.ensure_env_probed()
+        if not self.env_torch:
+            ret = QMessageBox.question(
+                self, "尚未安装 PyTorch",
+                "计数需要加载 U-Net 模型（PyTorch），当前尚未安装。\n"
+                "是否前往「环境」页一键安装（CPU 版约 200MB / CUDA 版约 2.5GB）？")
+            if ret == QMessageBox.Yes:
+                self.switch_page(4)
+            return
         d = self.data_dir
         if not (d / "manifest.csv").exists():
             QMessageBox.warning(self, "无法计数",
@@ -1096,7 +1436,7 @@ class MainWindow(QMainWindow):
             self.launch("v1", ROOT / "tools_v1_count.py", env)
 
     # ---------------- 子进程管理 ----------------
-    def launch(self, kind, script, env):
+    def launch(self, kind, script, env, extra_args=None):
         self.proc_kind = kind
         self.proc = QProcess(self)
         self.proc.setProcessChannelMode(QProcess.MergedChannels)
@@ -1114,12 +1454,18 @@ class MainWindow(QMainWindow):
             cand = Path(exe).with_name("pythonw.exe")
             if cand.exists():
                 exe = str(cand)
-        self.proc.start(exe, ["-u", str(script)])
+        args = extra_args if extra_args else ["-u", str(script)]
+        self.proc.start(exe, args)
         tp = self.pages["train"]
-        tp.btn_start.setEnabled(False)
-        tp.btn_stop.setEnabled(True)
-        tp.lbl_out.setText(f"运行中：{script.name}")
-        self.pages["count"].btn.setEnabled(False)
+        if kind == "install":
+            tp.btn_start.setEnabled(False)
+            tp.btn_stop.setEnabled(True)
+            tp.lbl_out.setText("运行中：pip install torch")
+        else:
+            tp.btn_start.setEnabled(False)
+            tp.btn_stop.setEnabled(True)
+            tp.lbl_out.setText(f"运行中：{script.name}")
+            self.pages["count"].btn.setEnabled(False)
 
     def stop_proc(self):
         if self.proc:
@@ -1137,9 +1483,31 @@ class MainWindow(QMainWindow):
     def on_stdout(self):
         data = bytes(self.proc.readAllStandardOutput().data()).decode(
             "utf-8", "replace")
+        if self.proc_kind == "install":
+            self.handle_install_output(data)
+            return
         for line in data.splitlines():
             if line.strip():
                 self.handle_line(line)
+
+    def handle_install_output(self, data):
+        """pip 下载输出：进度条用 \\r 刷新，取末段解析百分比，过滤噪声行。"""
+        ep = self.pages["env"]
+        seg = data.split("\r")[-1].strip()
+        m = re.search(r"(\d{1,3})%", seg)
+        if m:
+            pct = max(0, min(100, int(m.group(1))))
+            ep.progress.setValue(pct)
+            ep.progress.setFormat(f"下载安装 PyTorch… {pct}%")
+        for line in data.replace("\r", "\n").split("\n"):
+            s = line.strip()
+            if not s:
+                continue
+            if re.match(r"\s*\d{1,3}%", s) or set(s) <= set("-=|> "):
+                continue                      # 纯进度刷新行，不进日志
+            kind = ("err" if ("ERROR" in s or "错误" in s)
+                    else "dice" if "Successfully installed" in s else "")
+            ep.log.append_line(s, kind)
 
     def handle_line(self, line):
         kind = ""
@@ -1183,11 +1551,11 @@ class MainWindow(QMainWindow):
                 self.pages["train"].progress.setFormat("预处理数据 %v/%m")
 
     def log_any(self, text, kind=""):
-        if self.proc_kind in ("train", None):
-            self.pages["train"].log.append_line(text, kind)
-        if self.proc_kind in ("v1", "count"):
+        if self.proc_kind == "install":
+            self.pages["env"].log.append_line(text, kind)
+        elif self.proc_kind in ("v1", "count"):
             self.pages["count"].log.append_line(text, kind)
-        if self.proc_kind is None:
+        else:
             self.pages["train"].log.append_line(text, kind)
 
     def on_finished(self, code, status):
@@ -1217,6 +1585,18 @@ class MainWindow(QMainWindow):
             self.launch("count", ROOT / "tools_v2_count.py", self.count_env)
         elif kind == "count":
             self.load_count_report()
+        elif kind == "install":
+            ok = code == 0 and not crashed
+            self.pages["env"].install_done(ok)
+            self.pages["train"].lbl_out.setText("")
+            self.pages["env"].log.append_line(
+                "安装结束，正在重新检测环境…", "info")
+            self.check_env()
+            if SMOKE_ENV:
+                # 等重检返回后做断言
+                t = QTimer(self)
+                t.timeout.connect(lambda: self._smoke_env_after_install(t))
+                t.start(500)
 
     # ---------------- 报告解析 ----------------
     def load_metrics(self):
@@ -1316,6 +1696,49 @@ class MainWindow(QMainWindow):
                   flush=True)
         QApplication.exit(0 if ok else 1)
 
+    # ---------------- 环境页自检（验证瘦身安装包）----------------
+    def run_smoke_env(self):
+        """等启动探测返回 → 校验 torch 缺失被识别且自动跳到环境页 →
+        点击真实的「安装 CPU 版」按钮走完整安装流程。"""
+        self._env_tries = 0
+        t = QTimer(self)
+        t.timeout.connect(lambda: self._smoke_env_poll(t))
+        t.start(500)
+
+    def _smoke_env_poll(self, timer):
+        self._env_tries += 1
+        ep = self.pages["env"]
+        txt = ep.status_lbl["torch"].text()
+        if "检测中" in txt and self._env_tries < 120:
+            return                          # 等待探测子进程返回（最多 60s）
+        timer.stop()
+        auto = self.stack.currentIndex() == 4
+        print(f"SMOKE_ENV: torch 状态='{txt}' 自动跳转环境页={auto}",
+              flush=True)
+        if "未安装" in txt and auto:
+            ep.btn_cpu.click()              # 真实一键安装（SMOKE 自动确认）
+        elif self.env_torch:
+            print("SMOKE_ENV_RESULT: PASS torch 已存在（开发环境）",
+                  flush=True)
+            QApplication.exit(0)
+        else:
+            print("SMOKE_ENV_RESULT: FAIL torch 状态不符合预期", flush=True)
+            QApplication.exit(1)
+
+    def smoke_env_check(self):
+        ok = self.env_torch is not None
+        print("SMOKE_ENV_RESULT: " + ("PASS " if ok else "FAIL ")
+              + f"安装后 torch={self.env_torch}", flush=True)
+        QApplication.exit(0 if ok else 1)
+
+    def _smoke_env_after_install(self, timer):
+        if self.env_torch is None:
+            self._env_tries += 1
+            if self._env_tries < 240:       # 最多等 120s
+                return
+        timer.stop()
+        self.smoke_env_check()
+
     def closeEvent(self, ev):
         if self.proc:
             self.proc.terminate()
@@ -1332,7 +1755,7 @@ def open_path(p: Path):
 
 # ---------------------------------------------------------------- 入口
 def main():
-    if SMOKE:
+    if SMOKE or SMOKE_ENV:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLESHEET)

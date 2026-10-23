@@ -22,6 +22,10 @@ build_package.py —— 组装 ZebraQuant 便携运行时（打包 setup.exe 的
   app/      项目运行时文件（GUI + 训练/计数脚本 + 默认数据集）
   zebra.ico 应用图标（由 cv2 绘制）
 
+**torch 不打包**：CUDA 版 PyTorch 约 3GB，会让安装包臃肿。改为安装后由 GUI
+「环境」页按需一键安装（CPU 版约 200MB / CUDA 版约 2.5GB，源为 PyTorch 官方）。
+安装包含：PySide6 / numpy / opencv / pip（供环境页安装 torch）/ 默认数据集。
+
 排除：__pycache__、*.pyc、断点续训状态（unet_resume_*.pt）、
       旧可视化输出（*_vis/）、darknet 原生链路文件（DLL/build 目录等）。
 """
@@ -69,18 +73,33 @@ def ignore_patterns(patterns):
     return _ignore
 
 
-def copy_tree(src: Path, dst: Path, exclude_dirs=None, exclude_files=None):
+# site-packages 中不打包的大件/无关组件：
+#   torch/torchgen/functorch/nvidia/triton —— CUDA 版 PyTorch 约 3GB，
+#       改为应用内「环境」页按需一键安装（CPU 版约 200MB / CUDA 版约 2.5GB）
+#   pyinstaller 及其依赖 —— 仅打包工具链需要，运行时无关
+# 注意：dist-info 目录也必须排除，否则 pip 会认为 torch 已安装而跳过下载
+SP_EXCLUDE_DIR_GLOBS = ["torch", "torch*", "nvidia*", "functorch*",
+                        "triton*", "pyinstaller*", "altgraph*", "pefile*"]
+SP_EXCLUDE_FILES = ["*.pyc", "*.pyo", "pefile*"]
+
+
+def copy_tree(src: Path, dst: Path, exclude_dir_globs=None,
+              exclude_files=None, exclude_dirs=None):
+    import fnmatch
     dst.mkdir(parents=True, exist_ok=True)
     n = 0
     for root, dirs, files in os.walk(src):
         rel = Path(root).relative_to(src)
         if exclude_dirs:
             dirs[:] = [d for d in dirs if d not in exclude_dirs]
+        if exclude_dir_globs:
+            dirs[:] = [d for d in dirs
+                       if not any(fnmatch.fnmatch(d, g)
+                                  for g in exclude_dir_globs)]
         target = dst / rel
         target.mkdir(parents=True, exist_ok=True)
         for f in files:
             if exclude_files:
-                import fnmatch
                 if any(fnmatch.fnmatch(f, p) for p in exclude_files):
                     continue
             shutil.copy2(Path(root) / f, target / f)
@@ -122,11 +141,12 @@ def main():
                             "Scripts", "test", "tests"},
               exclude_files=["*.pyc", "*.pyo", "*.a", "*.lib"])
 
-    print("[2/4] 合并 site-packages")
+    print("[2/4] 合并 site-packages（排除 torch/CUDA/pyinstaller，约 3GB）")
     sp_src = VENV / "Lib" / "site-packages"
     sp_dst = STAGE / "python" / "Lib" / "site-packages"
-    copy_tree(sp_src, sp_dst, exclude_dirs={"__pycache__"},
-              exclude_files=["*.pyc", "*.pyo"])
+    copy_tree(sp_src, sp_dst,
+              exclude_dir_globs=SP_EXCLUDE_DIR_GLOBS + ["__pycache__"],
+              exclude_files=SP_EXCLUDE_FILES)
 
     print("[3/4] 复制项目运行时 -> app/")
     app = STAGE / "app"
